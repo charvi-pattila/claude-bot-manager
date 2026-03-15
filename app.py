@@ -211,8 +211,16 @@ def chat(agent_id):
                     "content": result
                 })
 
+        # Convert SDK content blocks to plain dicts for the follow-up call
+        assistant_content = []
+        for block in response.content:
+            if block.type == "tool_use":
+                assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+            elif block.type == "text":
+                assistant_content.append({"type": "text", "text": block.text})
+
         # Send tool results back to Claude for final reply
-        history.append({"role": "assistant", "content": response.content})
+        history.append({"role": "assistant", "content": assistant_content})
         history.append({"role": "user", "content": tool_results})
         kwargs["messages"] = history
         follow_up = client.messages.create(**kwargs)
