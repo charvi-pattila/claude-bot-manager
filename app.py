@@ -1,0 +1,191 @@
+import os
+import json
+import sqlite3
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+import anthropic
+from dotenv import load_dotenv
+from datetime import datetime
+
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)
+
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+AGENTS_FILE = "bots.json"
+DB_FILE = "chat_history.db"
+
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def load_agents():
+    with open(AGENTS_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_agents(agents):
+    with open(AGENTS_FILE, "w") as f:
+        json.dump(agents, f, indent=2)
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/agents", methods=["GET"])
+def get_agents():
+    return jsonify(load_agents())
+
+
+@app.route("/agents", methods=["POST"])
+def create_agent():
+    data = request.json
+    agents = load_agents()
+    agent = {
+        "id": str(len(agents) + 1),
+        "name": data["name"],
+        "type": data.get("type", "bot"),
+        "instructions": data.get("instructions", ""),
+        "status": "idle",
+        "created_at": datetime.now().strftime("%H:%M")
+    }
+    agents.append(agent)
+    save_agents(agents)
+    return jsonify(agent)
+
+
+@app.route("/agents/<agent_id>", methods=["DELETE"])
+def delete_agent(agent_id):
+    agents = load_agents()
+    agents = [a for a in agents if a["id"] != agent_id]
+    save_agents(agents)
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("DELETE FROM messages WHERE agent_id = ?", (agent_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Deleted"})
+
+
+@app.route("/agents/<agent_id>/status", methods=["POST"])
+def update_status(agent_id):
+    data = request.json
+    agents = load_agents()
+    for a in agents:
+        if a["id"] == agent_id:
+            a["status"] = data["status"]
+    save_agents(agents)
+    return jsonify({"message": "Updated"})
+
+
+@app.route("/agents/<agent_id>/history", methods=["GET"])
+def get_history(agent_id):
+    conn = sqlite3.connect(DB_FILE)
+    rows = conn.execute(
+        "SELECT role, content, created_at FROM messages WHERE agent_id = ? ORDER BY id",
+        (agent_id,)
+    ).fetchall()
+    conn.close()
+    return jsonify([{"role": r[0], "content": r[1], "created_at": r[2]} for r in rows])
+
+
+@app.route("/agents/<agent_id>/history", methods=["DELETE"])
+def clear_history(agent_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("DELETE FROM messages WHERE agent_id = ?", (agent_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Cleared"})
+
+
+@app.route("/chat/<agent_id>", methods=["POST"])
+def chat(agent_id):
+    agents = load_agents()
+    agent = next((a for a in agents if a["id"] == agent_id), None)
+    if not agent:
+        return jsonify({"error": "Agent not found"}), 404
+
+    for a in agents:
+        if a["id"] == agent_id:
+            a["status"] = "running"
+    save_agents(agents)
+
+    data = request.json
+    message = data.get("message", "")
+
+    # Save user message
+    now = datetime.now().strftime("%H:%M")
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute(
+        "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (agent_id, "user", message, now)
+    )
+    conn.commit()
+
+    # Load full history for context
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE agent_id = ? ORDER BY id",
+        (agent_id,)
+    ).fetchall()
+    conn.close()
+
+    history = [{"role": r[0], "content": r[1]} for r in rows]
+
+    kwargs = {
+        "model": "claude-opus-4-6",
+        "max_tokens": 1024,
+        "messages": history
+    }
+    if agent.get("instructions"):
+        kwargs["system"] = agent["instructions"]
+
+    response = client.messages.create(**kwargs)
+    reply = response.content[0].text
+
+    # Save assistant reply
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute(
+        "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (agent_id, "assistant", reply, datetime.now().strftime("%H:%M"))
+    )
+    conn.commit()
+    conn.close()
+
+    for a in agents:
+        if a["id"] == agent_id:
+            a["status"] = "idle"
+    save_agents(agents)
+
+    return jsonify({"reply": reply})
+
+
+@app.route("/direct", methods=["POST"])
+def direct_chat():
+    data = request.json
+    history = data.get("history", [])
+    response = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=1024,
+        messages=history
+    )
+    return jsonify({"reply": response.content[0].text})
+
+
+init_db()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, debug=False)

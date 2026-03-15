@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>My Agents</title>
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="My Agents">
+    <meta name="theme-color" content="#1a0a14">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, sans-serif; background: #1a0a14; color: #f0c0d8; min-height: 100vh; padding-bottom: 90px; }
+
+        /* Header */
+        .header { text-align: center; padding: 24px 20px 8px; font-size: 22px; font-weight: 700; color: #ff6eb0; }
+        .status-bar { display: flex; gap: 16px; justify-content: center; padding: 6px 20px 14px; font-size: 13px; color: #c2607a; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+        .dot-green { background: #4caf50; }
+        .dot-pink { background: #c2185b; }
+
+        /* Sections */
+        .section { padding: 16px 16px 0; }
+        .section-title { font-size: 11px; font-weight: 700; color: #8b3a5a; letter-spacing: 1.2px; margin-bottom: 10px; }
+
+        /* Agent Cards */
+        .agent-card { background: #2b1020; border-radius: 16px; padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; box-shadow: 0 2px 12px rgba(0,0,0,0.4); border: 1px solid #3d1a2e; }
+        .agent-card:active { opacity: 0.85; }
+        .agent-info h3 { font-size: 16px; font-weight: 600; color: #f0c0d8; margin-bottom: 3px; }
+        .agent-info p { font-size: 12px; color: #8b3a5a; }
+        .agent-right { text-align: right; }
+        .agent-right .time { font-size: 11px; color: #8b3a5a; margin-top: 4px; }
+        .badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .badge-running { background: #1a3320; color: #4caf50; }
+        .badge-idle { background: #3d1a2e; color: #c2185b; }
+
+        /* Bottom Nav */
+        .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: #20080f; border-top: 1px solid #3d1a2e; display: flex; justify-content: space-around; padding: 10px 0 20px; box-shadow: 0 -2px 10px rgba(0,0,0,0.4); }
+        .nav-item { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: #8b3a5a; cursor: pointer; }
+        .nav-item.active { color: #ff6eb0; }
+        .nav-icon { font-size: 22px; }
+
+        /* FAB */
+        .fab { position: fixed; bottom: 88px; right: 20px; width: 56px; height: 56px; background: linear-gradient(135deg, #c2185b, #880e4f); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; cursor: pointer; box-shadow: 0 4px 20px rgba(194,24,91,0.5); border: none; color: white; }
+
+        /* Modal */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: flex; align-items: flex-end; }
+        .modal { background: #20080f; border-radius: 24px 24px 0 0; padding: 28px 20px; width: 100%; border-top: 1px solid #3d1a2e; }
+        .modal h2 { margin-bottom: 20px; font-size: 20px; color: #ff6eb0; text-align: center; }
+        .modal input, .modal textarea, .modal select { width: 100%; padding: 12px 14px; margin-bottom: 12px; background: #2b1020; border: 1.5px solid #3d1a2e; border-radius: 12px; color: #f0c0d8; font-size: 15px; }
+        .modal select option { background: #2b1020; }
+        .modal-btn { width: 100%; padding: 14px; background: linear-gradient(135deg, #c2185b, #880e4f); color: white; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 4px; }
+        .modal-cancel { width: 100%; padding: 12px; background: transparent; color: #8b3a5a; border: none; font-size: 15px; cursor: pointer; margin-top: 8px; }
+
+        /* Hidden */
+        .hidden { display: none !important; }
+
+        /* Chat Screen */
+        #chat-screen { position: fixed; inset: 0; background: #1a0a14; z-index: 50; display: flex; flex-direction: column; }
+        .chat-header { display: flex; align-items: center; padding: 16px 16px 12px; background: #20080f; border-bottom: 1px solid #3d1a2e; box-shadow: 0 1px 8px rgba(0,0,0,0.4); }
+        .back-btn { background: none; border: none; color: #ff6eb0; font-size: 15px; font-weight: 600; cursor: pointer; margin-right: 12px; width: auto; padding: 0; }
+        .chat-header h2 { font-size: 17px; font-weight: 700; color: #ff6eb0; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 16px; }
+        .msg { max-width: 78%; margin-bottom: 10px; padding: 10px 14px; border-radius: 18px; font-size: 15px; line-height: 1.5; word-wrap: break-word; }
+        .user-msg { background: linear-gradient(135deg, #c2185b, #880e4f); color: white; margin-left: auto; border-bottom-right-radius: 4px; }
+        .bot-msg { background: #2b1020; color: #f0c0d8; border-bottom-left-radius: 4px; box-shadow: 0 1px 6px rgba(0,0,0,0.3); }
+        .thinking-msg { color: #8b3a5a; font-style: italic; font-size: 13px; padding: 6px 0; }
+        .chat-input-bar { padding: 12px 16px 28px; background: #20080f; border-top: 1px solid #3d1a2e; display: flex; gap: 10px; align-items: center; }
+        .chat-input-bar input { flex: 1; padding: 12px 16px; background: #2b1020; border: 1.5px solid #3d1a2e; border-radius: 24px; color: #f0c0d8; font-size: 15px; }
+        .chat-input-bar input:focus { outline: none; border-color: #c2185b; }
+        .send-btn { width: 44px; height: 44px; min-width: 44px; background: linear-gradient(135deg, #c2185b, #880e4f); border: none; border-radius: 50%; color: white; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; margin-top: 0; box-shadow: 0 2px 8px rgba(194,24,91,0.4); }
+
+        /* Empty state */
+        .empty { color: #8b3a5a; font-size: 14px; text-align: center; padding: 20px 0; }
+    </style>
+</head>
+<body>
+
+    <!-- Main Screen -->
+    <div id="main-screen">
+        <div class="header">✨ My Agents</div>
+        <div class="status-bar" id="status-bar">
+            <span><span class="dot dot-green"></span>0 running</span>
+            <span><span class="dot dot-pink"></span>0 idle</span>
+            <span>🤖 0 total</span>
+        </div>
+
+        <div class="section">
+            <div class="section-title">CLAUDE AGENTS</div>
+            <div id="claude-agents-list"><p class="empty">No agents yet — tap + to create one!</p></div>
+        </div>
+
+        <div class="section" style="margin-top:20px">
+            <div class="section-title">BOTS</div>
+            <div id="bots-list"><p class="empty">No bots yet — tap + to create one!</p></div>
+        </div>
+
+        <button class="fab" onclick="showModal()">+</button>
+
+        <div class="bottom-nav">
+            <div class="nav-item active">
+                <span class="nav-icon">⚡</span>
+                <span>Agents</span>
+            </div>
+            <div class="nav-item">
+                <span class="nav-icon">🔔</span>
+                <span>Updates</span>
+            </div>
+            <div class="nav-item">
+                <span class="nav-icon">⚙️</span>
+                <span>Settings</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Screen -->
+    <div id="chat-screen" class="hidden">
+        <div class="chat-header">
+            <button class="back-btn" onclick="goBack()">← Back</button>
+            <h2 id="chat-title">Chat</h2>
+        </div>
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-bar">
+            <input type="text" id="chat-input" placeholder="Message..." onkeydown="if(event.key==='Enter') sendMessage()" />
+            <button class="send-btn" onclick="sendMessage()">↑</button>
+        </div>
+    </div>
+
+    <!-- Create Modal -->
+    <div class="modal-overlay hidden" id="modal">
+        <div class="modal">
+            <h2>New Agent ✨</h2>
+            <select id="agent-type" onchange="toggleInstructions()">
+                <option value="claude-agent">Claude Agent (one-time task)</option>
+                <option value="bot">Bot (custom instructions)</option>
+            </select>
+            <input type="text" id="agent-name" placeholder="Name (e.g. Task Worker)" />
+            <textarea id="agent-instructions" rows="3" placeholder="Bot instructions..." class="hidden"></textarea>
+            <button class="modal-btn" onclick="createAgent()">Create 🌸</button>
+            <button class="modal-cancel" onclick="hideModal()">Cancel</button>
+        </div>
+    </div>
+
+    <script>
+        const API = window.location.origin;
+        let currentAgentId = null;
+        let conversationHistory = [];
+
+        function toggleInstructions() {
+            const type = document.getElementById('agent-type').value;
+            const ta = document.getElementById('agent-instructions');
+            if (type === 'bot') {
+                ta.classList.remove('hidden');
+            } else {
+                ta.classList.add('hidden');
+            }
+        }
+
+        async function loadAgents() {
+            const res = await fetch(API + '/agents');
+            const agents = await res.json();
+
+            const claudeAgents = agents.filter(a => a.type === 'claude-agent');
+            const bots = agents.filter(a => a.type === 'bot');
+            const running = agents.filter(a => a.status === 'running').length;
+            const idle = agents.filter(a => a.status === 'idle').length;
+
+            document.getElementById('status-bar').innerHTML =
+                '<span><span class="dot dot-green"></span>' + running + ' running</span>' +
+                '<span><span class="dot dot-pink"></span>' + idle + ' idle</span>' +
+                '<span>🤖 ' + agents.length + ' total</span>';
+
+            document.getElementById('claude-agents-list').innerHTML = claudeAgents.length === 0
+                ? '<p class="empty">No agents yet — tap + to create one!</p>'
+                : claudeAgents.map(agentCard).join('');
+
+            document.getElementById('bots-list').innerHTML = bots.length === 0
+                ? '<p class="empty">No bots yet — tap + to create one!</p>'
+                : bots.map(agentCard).join('');
+        }
+
+        function agentCard(a) {
+            var badgeClass = a.status === 'running' ? 'badge-running' : 'badge-idle';
+            var badgeLabel = a.status === 'running' ? '● Running' : '● Idle';
+            var time = a.created_at || 'just now';
+            return '<div class="agent-card" onclick="openChat(\'' + a.id + '\', \'' + a.name + '\')">' +
+                '<div class="agent-info"><h3>' + a.name + '</h3><p>' + a.type + '</p></div>' +
+                '<div class="agent-right"><span class="badge ' + badgeClass + '">' + badgeLabel + '</span>' +
+                '<div class="time">' + time + '</div></div></div>';
+        }
+
+        function showModal() {
+            document.getElementById('modal').classList.remove('hidden');
+        }
+
+        function hideModal() {
+            document.getElementById('modal').classList.add('hidden');
+        }
+
+        async function createAgent() {
+            var name = document.getElementById('agent-name').value.trim();
+            var type = document.getElementById('agent-type').value;
+            var instructions = document.getElementById('agent-instructions').value.trim();
+            if (!name) { alert('Please enter a name'); return; }
+            await fetch(API + '/agents', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, type: type, instructions: instructions })
+            });
+            document.getElementById('agent-name').value = '';
+            document.getElementById('agent-instructions').value = '';
+            hideModal();
+            loadAgents();
+        }
+
+        async function openChat(agentId, agentName) {
+            currentAgentId = agentId;
+            document.getElementById('chat-title').textContent = agentName;
+            document.getElementById('chat-messages').innerHTML = '';
+            document.getElementById('main-screen').classList.add('hidden');
+            document.getElementById('chat-screen').classList.remove('hidden');
+
+            const res = await fetch(API + '/agents/' + agentId + '/history');
+            const history = await res.json();
+            history.forEach(m => addMessage(m.content, m.role === 'user' ? 'user' : 'bot'));
+        }
+
+        function goBack() {
+            document.getElementById('chat-screen').classList.add('hidden');
+            document.getElementById('main-screen').classList.remove('hidden');
+            loadAgents();
+        }
+
+        async function sendMessage() {
+            var input = document.getElementById('chat-input');
+            var message = input.value.trim();
+            if (!message) return;
+            input.value = '';
+            addMessage(message, 'user');
+
+            var thinking = document.createElement('div');
+            thinking.className = 'thinking-msg';
+            thinking.id = 'thinking';
+            thinking.textContent = 'Thinking...';
+            document.getElementById('chat-messages').appendChild(thinking);
+
+            var res = await fetch(API + '/chat/' + currentAgentId, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            });
+
+            var el = document.getElementById('thinking');
+            if (el) el.remove();
+
+            var data = await res.json();
+            addMessage(data.reply, 'bot');
+        }
+
+        function addMessage(text, sender) {
+            var box = document.getElementById('chat-messages');
+            var div = document.createElement('div');
+            div.className = 'msg ' + (sender === 'user' ? 'user-msg' : 'bot-msg');
+            div.textContent = text;
+            box.appendChild(div);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        loadAgents();
+        setInterval(loadAgents, 5000);
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/sw.js');
+        }
+    </script>
+</body>
+</html>
