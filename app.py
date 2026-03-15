@@ -1,6 +1,9 @@
 import os
 import json
 import sqlite3
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import anthropic
@@ -112,6 +115,41 @@ def clear_history(agent_id):
     return jsonify({"message": "Cleared"})
 
 
+EMAIL_TOOLS = [
+    {
+        "name": "send_email",
+        "description": "Send an email via Gmail on behalf of the user.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address"},
+                "subject": {"type": "string", "description": "Email subject line"},
+                "body": {"type": "string", "description": "Email body (plain text)"}
+            },
+            "required": ["to", "subject", "body"]
+        }
+    }
+]
+
+
+def send_gmail(to, subject, body):
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+    if not gmail_user or not gmail_password:
+        raise ValueError("Gmail credentials not configured")
+
+    msg = MIMEMultipart()
+    msg["From"] = gmail_user
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(gmail_user, gmail_password)
+        server.sendmail(gmail_user, to, msg.as_string())
+
+
 @app.route("/chat/<agent_id>", methods=["POST"])
 def chat(agent_id):
     agents = load_agents()
@@ -148,13 +186,39 @@ def chat(agent_id):
     kwargs = {
         "model": "claude-opus-4-6",
         "max_tokens": 1024,
-        "messages": history
+        "messages": history,
+        "tools": EMAIL_TOOLS
     }
     if agent.get("instructions"):
         kwargs["system"] = agent["instructions"]
 
     response = client.messages.create(**kwargs)
-    reply = response.content[0].text
+
+    # Handle tool use
+    reply = None
+    if response.stop_reason == "tool_use":
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "send_email":
+                try:
+                    send_gmail(block.input["to"], block.input["subject"], block.input["body"])
+                    result = f"Email sent to {block.input['to']}"
+                except Exception as e:
+                    result = f"Failed to send email: {str(e)}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result
+                })
+
+        # Send tool results back to Claude for final reply
+        history.append({"role": "assistant", "content": response.content})
+        history.append({"role": "user", "content": tool_results})
+        kwargs["messages"] = history
+        follow_up = client.messages.create(**kwargs)
+        reply = follow_up.content[0].text
+    else:
+        reply = response.content[0].text
 
     # Save assistant reply
     conn = sqlite3.connect(DB_FILE)
