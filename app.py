@@ -15,7 +15,8 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+api_key = os.getenv("ANTHROPIC_API_KEY")
+client = anthropic.Anthropic(api_key=api_key) if api_key else None
 AGENTS_FILE = "bots.json"
 DB_FILE = "chat_history.db"
 
@@ -195,6 +196,9 @@ def chat(agent_id):
     }
     if agent.get("instructions"):
         kwargs["system"] = agent["instructions"]
+
+    if not client:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 500
 
     response = client.messages.create(**kwargs)
 
