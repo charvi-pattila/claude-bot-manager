@@ -60,6 +60,22 @@ def debug_key():
     })
 
 
+@app.route("/test-api")
+def test_api():
+    try:
+        if not client:
+            return jsonify({"error": "client not initialized - no API key"})
+        r = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "hi"}]
+        )
+        return jsonify({"status": "ok", "reply": r.content[0].text})
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()})
+
+
 @app.route("/")
 def index():
     resp = render_template("index.html")
