@@ -46,6 +46,20 @@ def save_agents(agents):
         json.dump(agents, f, indent=2)
 
 
+@app.route("/debug-key")
+def debug_key():
+    key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not key:
+        return jsonify({"status": "MISSING - no key set"})
+    return jsonify({
+        "length": len(key),
+        "starts_with": key[:12],
+        "ends_with": key[-4:],
+        "has_spaces": " " in key,
+        "has_newline": "\n" in key or "\r" in key
+    })
+
+
 @app.route("/")
 def index():
     resp = render_template("index.html")
