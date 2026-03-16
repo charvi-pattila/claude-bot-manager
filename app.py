@@ -220,7 +220,7 @@ def chat(agent_id):
         history = [{"role": r[0], "content": r[1]} for r in rows]
 
         kwargs = {
-            "model": "claude-opus-4-6",
+            "model": "claude-sonnet-4-6",
             "max_tokens": 1024,
             "messages": history,
             "tools": EMAIL_TOOLS
