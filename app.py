@@ -157,100 +157,105 @@ def send_gmail(to, subject, body):
 
 @app.route("/chat/<agent_id>", methods=["POST"])
 def chat(agent_id):
-    agents = load_agents()
-    agent = next((a for a in agents if a["id"] == agent_id), None)
-    if not agent:
-        return jsonify({"error": "Agent not found"}), 404
+    try:
+        agents = load_agents()
+        agent = next((a for a in agents if a["id"] == agent_id), None)
+        if not agent:
+            return jsonify({"error": "Agent not found"}), 404
 
-    for a in agents:
-        if a["id"] == agent_id:
-            a["status"] = "running"
-    save_agents(agents)
+        for a in agents:
+            if a["id"] == agent_id:
+                a["status"] = "running"
+        save_agents(agents)
 
-    data = request.json
-    message = data.get("message", "")
+        data = request.json
+        message = data.get("message", "")
 
-    # Save user message
-    now = datetime.now().strftime("%H:%M")
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (agent_id, "user", message, now)
-    )
-    conn.commit()
+        # Save user message
+        now = datetime.now().strftime("%H:%M")
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute(
+            "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (agent_id, "user", message, now)
+        )
+        conn.commit()
 
-    # Load full history for context
-    rows = conn.execute(
-        "SELECT role, content FROM messages WHERE agent_id = ? ORDER BY id",
-        (agent_id,)
-    ).fetchall()
-    conn.close()
+        # Load full history for context
+        rows = conn.execute(
+            "SELECT role, content FROM messages WHERE agent_id = ? ORDER BY id",
+            (agent_id,)
+        ).fetchall()
+        conn.close()
 
-    history = [{"role": r[0], "content": r[1]} for r in rows]
+        history = [{"role": r[0], "content": r[1]} for r in rows]
 
-    kwargs = {
-        "model": "claude-opus-4-6",
-        "max_tokens": 1024,
-        "messages": history,
-        "tools": EMAIL_TOOLS
-    }
-    if agent.get("instructions"):
-        kwargs["system"] = agent["instructions"]
+        kwargs = {
+            "model": "claude-opus-4-6",
+            "max_tokens": 1024,
+            "messages": history,
+            "tools": EMAIL_TOOLS
+        }
+        if agent.get("instructions"):
+            kwargs["system"] = agent["instructions"]
 
-    if not client:
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 500
+        if not client:
+            return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 500
 
-    response = client.messages.create(**kwargs)
+        response = client.messages.create(**kwargs)
 
-    # Handle tool use
-    reply = None
-    if response.stop_reason == "tool_use":
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "send_email":
-                try:
-                    send_gmail(block.input["to"], block.input["subject"], block.input["body"])
-                    result = f"Email sent to {block.input['to']}"
-                except Exception as e:
-                    result = f"Failed to send email: {str(e)}"
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result
-                })
+        # Handle tool use
+        reply = None
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "send_email":
+                    try:
+                        send_gmail(block.input["to"], block.input["subject"], block.input["body"])
+                        result = f"Email sent to {block.input['to']}"
+                    except Exception as e:
+                        result = f"Failed to send email: {str(e)}"
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result
+                    })
 
-        # Convert SDK content blocks to plain dicts for the follow-up call
-        assistant_content = []
-        for block in response.content:
-            if block.type == "tool_use":
-                assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
-            elif block.type == "text":
-                assistant_content.append({"type": "text", "text": block.text})
+            # Convert SDK content blocks to plain dicts for the follow-up call
+            assistant_content = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+                elif block.type == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
 
-        # Send tool results back to Claude for final reply
-        history.append({"role": "assistant", "content": assistant_content})
-        history.append({"role": "user", "content": tool_results})
-        kwargs["messages"] = history
-        follow_up = client.messages.create(**kwargs)
-        reply = follow_up.content[0].text
-    else:
-        reply = response.content[0].text
+            # Send tool results back to Claude for final reply
+            history.append({"role": "assistant", "content": assistant_content})
+            history.append({"role": "user", "content": tool_results})
+            kwargs["messages"] = history
+            follow_up = client.messages.create(**kwargs)
+            reply = follow_up.content[0].text
+        else:
+            reply = response.content[0].text
 
-    # Save assistant reply
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (agent_id, "assistant", reply, datetime.now().strftime("%H:%M"))
-    )
-    conn.commit()
-    conn.close()
+        # Save assistant reply
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute(
+            "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (agent_id, "assistant", reply, datetime.now().strftime("%H:%M"))
+        )
+        conn.commit()
+        conn.close()
 
-    for a in agents:
-        if a["id"] == agent_id:
-            a["status"] = "idle"
-    save_agents(agents)
+        for a in agents:
+            if a["id"] == agent_id:
+                a["status"] = "idle"
+        save_agents(agents)
 
-    return jsonify({"reply": reply})
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
 
 
 @app.route("/direct", methods=["POST"])
