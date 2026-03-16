@@ -15,7 +15,7 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-api_key = os.getenv("ANTHROPIC_API_KEY")
+api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
 client = anthropic.Anthropic(api_key=api_key) if api_key else None
 AGENTS_FILE = "bots.json"
 DB_FILE = "chat_history.db"
