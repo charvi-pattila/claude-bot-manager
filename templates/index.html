@@ -25,15 +25,24 @@
         .section-title { font-size: 11px; font-weight: 700; color: #8b3a5a; letter-spacing: 1.2px; margin-bottom: 10px; }
 
         /* Agent Cards */
-        .agent-card { background: #2b1020; border-radius: 16px; padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; box-shadow: 0 2px 12px rgba(0,0,0,0.4); border: 1px solid #3d1a2e; }
+        .agent-card { background: #2b1020; border-radius: 16px; padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; box-shadow: 0 2px 12px rgba(0,0,0,0.4); border: 1px solid #3d1a2e; position: relative; }
         .agent-card:active { opacity: 0.85; }
         .agent-info h3 { font-size: 16px; font-weight: 600; color: #f0c0d8; margin-bottom: 3px; }
         .agent-info p { font-size: 12px; color: #8b3a5a; }
-        .agent-right { text-align: right; }
-        .agent-right .time { font-size: 11px; color: #8b3a5a; margin-top: 4px; }
+        .agent-right { display: flex; align-items: center; gap: 8px; }
+        .agent-meta { text-align: right; }
+        .agent-meta .time { font-size: 11px; color: #8b3a5a; margin-top: 4px; }
         .badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
         .badge-running { background: #1a3320; color: #4caf50; }
         .badge-idle { background: #3d1a2e; color: #c2185b; }
+
+        /* 3-dot menu */
+        .menu-btn { background: none; border: none; color: #f0c0d8; font-size: 22px; cursor: pointer; padding: 4px 10px; border-radius: 8px; line-height: 1; flex-shrink: 0; font-weight: 700; }
+        .menu-btn:active { background: #3d1a2e; }
+        .dropdown { position: absolute; right: 12px; top: 48px; background: #2b1020; border: 1px solid #3d1a2e; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); z-index: 200; min-width: 140px; overflow: hidden; }
+        .dropdown-item { padding: 12px 16px; font-size: 14px; cursor: pointer; color: #f0c0d8; }
+        .dropdown-item:active { background: #3d1a2e; }
+        .dropdown-item.danger { color: #ff4081; }
 
         /* Bottom Nav */
         .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: #20080f; border-top: 1px solid #3d1a2e; display: flex; justify-content: space-around; padding: 10px 0 20px; box-shadow: 0 -2px 10px rgba(0,0,0,0.4); }
@@ -66,6 +75,7 @@
         .user-msg { background: linear-gradient(135deg, #c2185b, #880e4f); color: white; margin-left: auto; border-bottom-right-radius: 4px; }
         .bot-msg { background: #2b1020; color: #f0c0d8; border-bottom-left-radius: 4px; box-shadow: 0 1px 6px rgba(0,0,0,0.3); }
         .thinking-msg { color: #8b3a5a; font-style: italic; font-size: 13px; padding: 6px 0; }
+        .error-msg { background: #3d0a0a; color: #ff6b6b; border-bottom-left-radius: 4px; }
         .chat-input-bar { padding: 12px 16px 28px; background: #20080f; border-top: 1px solid #3d1a2e; display: flex; gap: 10px; align-items: center; }
         .chat-input-bar input { flex: 1; padding: 12px 16px; background: #2b1020; border: 1.5px solid #3d1a2e; border-radius: 24px; color: #f0c0d8; font-size: 15px; }
         .chat-input-bar input:focus { outline: none; border-color: #c2185b; }
@@ -145,7 +155,16 @@
     <script>
         const API = window.location.origin;
         let currentAgentId = null;
-        let conversationHistory = [];
+        let openMenuId = null;
+
+        // Close dropdown when tapping outside
+        document.addEventListener('click', function() {
+            if (openMenuId) {
+                var el = document.getElementById('menu-' + openMenuId);
+                if (el) el.classList.add('hidden');
+                openMenuId = null;
+            }
+        });
 
         function toggleInstructions() {
             const type = document.getElementById('agent-type').value;
@@ -158,26 +177,28 @@
         }
 
         async function loadAgents() {
-            const res = await fetch(API + '/agents');
-            const agents = await res.json();
+            try {
+                const res = await fetch(API + '/agents');
+                const agents = await res.json();
 
-            const claudeAgents = agents.filter(a => a.type === 'claude-agent');
-            const bots = agents.filter(a => a.type === 'bot');
-            const running = agents.filter(a => a.status === 'running').length;
-            const idle = agents.filter(a => a.status === 'idle').length;
+                const claudeAgents = agents.filter(a => a.type === 'claude-agent');
+                const bots = agents.filter(a => a.type === 'bot');
+                const running = agents.filter(a => a.status === 'running').length;
+                const idle = agents.filter(a => a.status === 'idle').length;
 
-            document.getElementById('status-bar').innerHTML =
-                '<span><span class="dot dot-green"></span>' + running + ' running</span>' +
-                '<span><span class="dot dot-pink"></span>' + idle + ' idle</span>' +
-                '<span>🤖 ' + agents.length + ' total</span>';
+                document.getElementById('status-bar').innerHTML =
+                    '<span><span class="dot dot-green"></span>' + running + ' running</span>' +
+                    '<span><span class="dot dot-pink"></span>' + idle + ' idle</span>' +
+                    '<span>🤖 ' + agents.length + ' total</span>';
 
-            document.getElementById('claude-agents-list').innerHTML = claudeAgents.length === 0
-                ? '<p class="empty">No agents yet — tap + to create one!</p>'
-                : claudeAgents.map(agentCard).join('');
+                document.getElementById('claude-agents-list').innerHTML = claudeAgents.length === 0
+                    ? '<p class="empty">No agents yet — tap + to create one!</p>'
+                    : claudeAgents.map(agentCard).join('');
 
-            document.getElementById('bots-list').innerHTML = bots.length === 0
-                ? '<p class="empty">No bots yet — tap + to create one!</p>'
-                : bots.map(agentCard).join('');
+                document.getElementById('bots-list').innerHTML = bots.length === 0
+                    ? '<p class="empty">No bots yet — tap + to create one!</p>'
+                    : bots.map(agentCard).join('');
+            } catch(e) {}
         }
 
         function agentCard(a) {
@@ -186,8 +207,38 @@
             var time = a.created_at || 'just now';
             return '<div class="agent-card" onclick="openChat(\'' + a.id + '\', \'' + a.name + '\')">' +
                 '<div class="agent-info"><h3>' + a.name + '</h3><p>' + a.type + '</p></div>' +
-                '<div class="agent-right"><span class="badge ' + badgeClass + '">' + badgeLabel + '</span>' +
-                '<div class="time">' + time + '</div></div></div>';
+                '<div class="agent-right">' +
+                '<div class="agent-meta"><span class="badge ' + badgeClass + '">' + badgeLabel + '</span><div class="time">' + time + '</div></div>' +
+                '<button class="menu-btn" onclick="toggleMenu(event,\'' + a.id + '\')">⋮</button>' +
+                '</div>' +
+                '<div class="dropdown hidden" id="menu-' + a.id + '">' +
+                '<div class="dropdown-item danger" onclick="deleteAgent(event,\'' + a.id + '\')">🗑 Delete</div>' +
+                '</div>' +
+                '</div>';
+        }
+
+        function toggleMenu(e, agentId) {
+            e.stopPropagation();
+            // Close any open menu
+            if (openMenuId && openMenuId !== agentId) {
+                var prev = document.getElementById('menu-' + openMenuId);
+                if (prev) prev.classList.add('hidden');
+            }
+            var menu = document.getElementById('menu-' + agentId);
+            if (menu.classList.contains('hidden')) {
+                menu.classList.remove('hidden');
+                openMenuId = agentId;
+            } else {
+                menu.classList.add('hidden');
+                openMenuId = null;
+            }
+        }
+
+        async function deleteAgent(e, agentId) {
+            e.stopPropagation();
+            openMenuId = null;
+            await fetch(API + '/agents/' + agentId, { method: 'DELETE' });
+            loadAgents();
         }
 
         function showModal() {
@@ -221,9 +272,11 @@
             document.getElementById('main-screen').classList.add('hidden');
             document.getElementById('chat-screen').classList.remove('hidden');
 
-            const res = await fetch(API + '/agents/' + agentId + '/history');
-            const history = await res.json();
-            history.forEach(m => addMessage(m.content, m.role === 'user' ? 'user' : 'bot'));
+            try {
+                const res = await fetch(API + '/agents/' + agentId + '/history');
+                const history = await res.json();
+                history.forEach(m => addMessage(m.content, m.role === 'user' ? 'user' : 'bot'));
+            } catch(e) {}
         }
 
         function goBack() {
@@ -245,23 +298,33 @@
             thinking.textContent = 'Thinking...';
             document.getElementById('chat-messages').appendChild(thinking);
 
-            var res = await fetch(API + '/chat/' + currentAgentId, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: message })
-            });
+            try {
+                var res = await fetch(API + '/chat/' + currentAgentId, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+                var el = document.getElementById('thinking');
+                if (el) el.remove();
 
-            var el = document.getElementById('thinking');
-            if (el) el.remove();
-
-            var data = await res.json();
-            addMessage(data.reply, 'bot');
+                var data = await res.json();
+                if (data.error) {
+                    addMessage('Error: ' + data.error, 'error');
+                } else {
+                    addMessage(data.reply, 'bot');
+                }
+            } catch(e) {
+                var el = document.getElementById('thinking');
+                if (el) el.remove();
+                addMessage('Error: Could not reach server', 'error');
+            }
         }
 
         function addMessage(text, sender) {
             var box = document.getElementById('chat-messages');
             var div = document.createElement('div');
-            div.className = 'msg ' + (sender === 'user' ? 'user-msg' : 'bot-msg');
+            var cls = sender === 'user' ? 'user-msg' : sender === 'error' ? 'error-msg' : 'bot-msg';
+            div.className = 'msg ' + cls;
             div.textContent = text;
             box.appendChild(div);
             box.scrollTop = box.scrollHeight;

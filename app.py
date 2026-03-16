@@ -47,7 +47,11 @@ def save_agents(agents):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    resp = render_template("index.html")
+    from flask import make_response
+    r = make_response(resp)
+    r.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    return r
 
 
 @app.route("/agents", methods=["GET"])
