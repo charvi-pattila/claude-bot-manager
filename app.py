@@ -2,9 +2,11 @@ import os
 import json
 import sqlite3
 import smtplib
+import threading
+import uuid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from flask import Flask, request, jsonify, render_template, Response
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import anthropic
 from dotenv import load_dotenv
@@ -19,6 +21,9 @@ api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
 client = anthropic.Anthropic(api_key=api_key) if api_key else None
 AGENTS_FILE = "bots.json"
 DB_FILE = "chat_history.db"
+
+# In-memory job store for async chat
+jobs = {}  # job_id -> {"status": "pending"/"done"/"error", "reply": None, "error": None}
 
 
 def init_db():
@@ -195,14 +200,10 @@ def chat(agent_id):
     if not client:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured on server"}), 500
 
-    for a in agents:
-        if a["id"] == agent_id:
-            a["status"] = "running"
-    save_agents(agents)
-
     data = request.json
     message = data.get("message", "")
 
+    # Save user message and load history synchronously
     now = datetime.now().strftime("%H:%M")
     conn = sqlite3.connect(DB_FILE)
     conn.execute(
@@ -217,7 +218,6 @@ def chat(agent_id):
     conn.close()
 
     history = [{"role": r[0], "content": r[1]} for r in rows]
-
     kwargs = {
         "model": "claude-sonnet-4-6",
         "max_tokens": 1024,
@@ -227,19 +227,23 @@ def chat(agent_id):
     if agent.get("instructions"):
         kwargs["system"] = agent["instructions"]
 
-    def generate():
-        full_reply = ""
-        try:
-            with client.messages.stream(**kwargs) as stream:
-                for text in stream.text_stream:
-                    full_reply += text
-                    yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
-                final = stream.get_final_message()
+    # Mark agent running
+    for a in agents:
+        if a["id"] == agent_id:
+            a["status"] = "running"
+    save_agents(agents)
 
-            # Handle tool use (send_email)
-            if final.stop_reason == "tool_use":
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "pending", "reply": None, "error": None}
+
+    def run_chat():
+        try:
+            response = client.messages.create(**kwargs)
+
+            reply = None
+            if response.stop_reason == "tool_use":
                 tool_results = []
-                for block in final.content:
+                for block in response.content:
                     if block.type == "tool_use" and block.name == "send_email":
                         try:
                             send_gmail(block.input["to"], block.input["subject"], block.input["body"])
@@ -253,7 +257,7 @@ def chat(agent_id):
                         })
 
                 assistant_content = []
-                for block in final.content:
+                for block in response.content:
                     if block.type == "tool_use":
                         assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
                     elif block.type == "text":
@@ -262,17 +266,16 @@ def chat(agent_id):
                 history.append({"role": "assistant", "content": assistant_content})
                 history.append({"role": "user", "content": tool_results})
                 kwargs["messages"] = history
-                full_reply = ""
-                with client.messages.stream(**kwargs) as stream2:
-                    for text in stream2.text_stream:
-                        full_reply += text
-                        yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
+                follow_up = client.messages.create(**kwargs)
+                reply = follow_up.content[0].text
+            else:
+                reply = response.content[0].text
 
-            # Save reply
+            # Save assistant reply
             conn = sqlite3.connect(DB_FILE)
             conn.execute(
                 "INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (agent_id, "assistant", full_reply, datetime.now().strftime("%H:%M"))
+                (agent_id, "assistant", reply, datetime.now().strftime("%H:%M"))
             )
             conn.commit()
             conn.close()
@@ -283,16 +286,22 @@ def chat(agent_id):
                     a["status"] = "idle"
             save_agents(agents_now)
 
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            jobs[job_id] = {"status": "done", "reply": reply, "error": None}
 
         except Exception as e:
             import traceback
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e), 'detail': traceback.format_exc()})}\n\n"
+            jobs[job_id] = {"status": "error", "reply": None, "error": str(e), "detail": traceback.format_exc()}
 
-    return Response(generate(), mimetype="text/event-stream", headers={
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no"
-    })
+    threading.Thread(target=run_chat, daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/poll/<job_id>")
+def poll(job_id):
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
 
 
 @app.route("/direct", methods=["POST"])

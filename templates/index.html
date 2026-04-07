@@ -304,51 +304,44 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: message })
                 });
+                var data = await res.json();
 
-                var thinkingEl = document.getElementById('thinking');
-                if (thinkingEl) thinkingEl.remove();
+                if (data.error) {
+                    var el = document.getElementById('thinking');
+                    if (el) el.remove();
+                    addMessage('Error: ' + data.error, 'error');
+                    return;
+                }
 
-                var botDiv = document.createElement('div');
-                botDiv.className = 'msg bot-msg';
-                document.getElementById('chat-messages').appendChild(botDiv);
-                var box = document.getElementById('chat-messages');
-
-                var reader = res.body.getReader();
-                var decoder = new TextDecoder();
-                var buffer = '';
-
-                while (true) {
-                    var result = await reader.read();
-                    if (result.done) break;
-                    buffer += decoder.decode(result.value, { stream: true });
-                    var lines = buffer.split('\n');
-                    buffer = lines.pop();
-                    for (var i = 0; i < lines.length; i++) {
-                        var line = lines[i];
-                        if (line.startsWith('data: ')) {
-                            try {
-                                var event = JSON.parse(line.slice(6));
-                                if (event.type === 'text') {
-                                    botDiv.textContent += event.content;
-                                    box.scrollTop = box.scrollHeight;
-                                } else if (event.type === 'error') {
-                                    botDiv.className = 'msg error-msg';
-                                    botDiv.textContent = 'Error: ' + event.content;
-                                }
-                            } catch(e) {}
+                var jobId = data.job_id;
+                // Poll until done
+                var pollInterval = setInterval(async function() {
+                    try {
+                        var pollRes = await fetch(API + '/poll/' + jobId);
+                        var job = await pollRes.json();
+                        if (job.status === 'done') {
+                            clearInterval(pollInterval);
+                            var el = document.getElementById('thinking');
+                            if (el) el.remove();
+                            addMessage(job.reply, 'bot');
+                        } else if (job.status === 'error') {
+                            clearInterval(pollInterval);
+                            var el = document.getElementById('thinking');
+                            if (el) el.remove();
+                            addMessage('Error: ' + job.error, 'error');
                         }
+                    } catch(e) {
+                        clearInterval(pollInterval);
+                        var el = document.getElementById('thinking');
+                        if (el) el.remove();
+                        addMessage('Error: Lost connection while waiting', 'error');
                     }
-                }
-
-                if (!botDiv.textContent) {
-                    botDiv.remove();
-                    addMessage('Error: No response received', 'error');
-                }
+                }, 1500);
 
             } catch(e) {
                 var el = document.getElementById('thinking');
                 if (el) el.remove();
-                addMessage('Error: Could not reach server', 'error');
+                addMessage('Error: ' + e.message, 'error');
             }
         }
 
