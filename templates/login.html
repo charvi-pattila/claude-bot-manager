@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Sign in — My Agents</title>
+    <meta name="theme-color" content="#1a0a14">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, sans-serif; background: #1a0a14; color: #f0c0d8;
+               min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .card { background: #20080f; border: 1px solid #3d1a2e; border-radius: 24px;
+                padding: 32px 24px; width: 100%; max-width: 360px; box-shadow: 0 4px 24px rgba(0,0,0,0.5); }
+        h1 { font-size: 22px; color: #ff6eb0; text-align: center; margin-bottom: 6px; }
+        .sub { font-size: 13px; color: #8b3a5a; text-align: center; margin-bottom: 22px; }
+        input { width: 100%; padding: 13px 15px; background: #2b1020; border: 1.5px solid #3d1a2e;
+                border-radius: 12px; color: #f0c0d8; font-size: 16px; margin-bottom: 12px; }
+        input:focus { outline: none; border-color: #c2185b; }
+        button { width: 100%; padding: 14px; background: linear-gradient(135deg, #c2185b, #880e4f);
+                 color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; }
+        .error { background: #3d0a0a; color: #ff6b6b; border-radius: 10px; padding: 10px 12px;
+                 font-size: 13px; margin-bottom: 14px; text-align: center; }
+    </style>
+</head>
+<body>
+    <form class="card" method="POST" action="/login">
+        <h1>✨ My Agents</h1>
+        <div class="sub">Enter your password to continue</div>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <input type="password" name="password" placeholder="Password" autocomplete="current-password"
+               autofocus required>
+        <button type="submit">Sign in</button>
+    </form>
+</body>
+</html>

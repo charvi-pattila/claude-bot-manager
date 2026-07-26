@@ -83,6 +83,22 @@
 
         /* Empty state */
         .empty { color: #8b3a5a; font-size: 14px; text-align: center; padding: 20px 0; }
+
+        /* Email confirmation card */
+        .email-confirm { max-width: 92%; border: 1px solid #c2185b; }
+        .email-confirm-title { font-weight: 700; color: #ff6eb0; margin-bottom: 8px; }
+        .email-field { font-size: 13px; color: #c2607a; margin-bottom: 4px; word-break: break-word; }
+        .email-body { background: #1a0a14; border-radius: 10px; padding: 10px; margin: 8px 0; font-size: 14px; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
+        .email-actions { display: flex; gap: 8px; margin-top: 10px; }
+        .email-btn { flex: 1; padding: 10px; border: none; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; }
+        .email-send { background: linear-gradient(135deg, #c2185b, #880e4f); color: #fff; }
+        .email-cancel { background: #3d1a2e; color: #f0c0d8; }
+        .email-btn:disabled { opacity: 0.5; cursor: default; }
+        .email-decided { font-size: 13px; color: #8b3a5a; }
+
+        /* Logout */
+        .logout-form { position: absolute; top: 22px; right: 16px; }
+        .logout-btn { background: none; border: none; color: #8b3a5a; font-size: 13px; cursor: pointer; padding: 4px 8px; }
     </style>
 </head>
 <body>
@@ -90,6 +106,9 @@
     <!-- Main Screen -->
     <div id="main-screen">
         <div class="header">✨ My Agents</div>
+        <form class="logout-form" method="POST" action="/logout">
+            <button type="submit" class="logout-btn">Log out</button>
+        </form>
         <div class="status-bar" id="status-bar">
             <span><span class="dot dot-green"></span>0 running</span>
             <span><span class="dot dot-pink"></span>0 idle</span>
@@ -176,9 +195,36 @@
             }
         }
 
+        // Every request goes through here so a session that has expired sends the
+        // user back to the login page instead of failing silently.
+        async function api(path, options) {
+            const res = await fetch(API + path, options);
+            if (res.status === 401) {
+                window.location.href = '/login';
+                throw new Error('Not authenticated');
+            }
+            return res;
+        }
+
+        function el(tag, className, text) {
+            var node = document.createElement(tag);
+            if (className) node.className = className;
+            if (text !== undefined && text !== null) node.textContent = text;
+            return node;
+        }
+
+        function renderList(container, items, emptyText) {
+            container.replaceChildren();
+            if (items.length === 0) {
+                container.appendChild(el('p', 'empty', emptyText));
+                return;
+            }
+            items.forEach(function(a) { container.appendChild(agentCard(a)); });
+        }
+
         async function loadAgents() {
             try {
-                const res = await fetch(API + '/agents');
+                const res = await api('/agents');
                 const agents = await res.json();
 
                 const claudeAgents = agents.filter(a => a.type === 'claude-agent');
@@ -186,35 +232,58 @@
                 const running = agents.filter(a => a.status === 'running').length;
                 const idle = agents.filter(a => a.status === 'idle').length;
 
-                document.getElementById('status-bar').innerHTML =
-                    '<span><span class="dot dot-green"></span>' + running + ' running</span>' +
-                    '<span><span class="dot dot-pink"></span>' + idle + ' idle</span>' +
-                    '<span>🤖 ' + agents.length + ' total</span>';
+                var bar = document.getElementById('status-bar');
+                bar.replaceChildren();
+                var runSpan = el('span');
+                runSpan.appendChild(el('span', 'dot dot-green'));
+                runSpan.appendChild(document.createTextNode(running + ' running'));
+                var idleSpan = el('span');
+                idleSpan.appendChild(el('span', 'dot dot-pink'));
+                idleSpan.appendChild(document.createTextNode(idle + ' idle'));
+                bar.appendChild(runSpan);
+                bar.appendChild(idleSpan);
+                bar.appendChild(el('span', null, '🤖 ' + agents.length + ' total'));
 
-                document.getElementById('claude-agents-list').innerHTML = claudeAgents.length === 0
-                    ? '<p class="empty">No agents yet — tap + to create one!</p>'
-                    : claudeAgents.map(agentCard).join('');
-
-                document.getElementById('bots-list').innerHTML = bots.length === 0
-                    ? '<p class="empty">No bots yet — tap + to create one!</p>'
-                    : bots.map(agentCard).join('');
+                renderList(document.getElementById('claude-agents-list'), claudeAgents,
+                    'No agents yet — tap + to create one!');
+                renderList(document.getElementById('bots-list'), bots,
+                    'No bots yet — tap + to create one!');
             } catch(e) {}
         }
 
+        // Built as DOM nodes rather than an HTML string. Agent names are typed by
+        // the user, so string-concatenating them into innerHTML (and into an
+        // onclick attribute) let a name like  '); alert(1)//  run as script.
         function agentCard(a) {
-            var badgeClass = a.status === 'running' ? 'badge-running' : 'badge-idle';
-            var badgeLabel = a.status === 'running' ? '● Running' : '● Idle';
-            var time = a.created_at || 'just now';
-            return '<div class="agent-card" onclick="openChat(\'' + a.id + '\', \'' + a.name + '\')">' +
-                '<div class="agent-info"><h3>' + a.name + '</h3><p>' + a.type + '</p></div>' +
-                '<div class="agent-right">' +
-                '<div class="agent-meta"><span class="badge ' + badgeClass + '">' + badgeLabel + '</span><div class="time">' + time + '</div></div>' +
-                '<button class="menu-btn" onclick="toggleMenu(event,\'' + a.id + '\')">⋮</button>' +
-                '</div>' +
-                '<div class="dropdown hidden" id="menu-' + a.id + '">' +
-                '<div class="dropdown-item danger" onclick="deleteAgent(event,\'' + a.id + '\')">🗑 Delete</div>' +
-                '</div>' +
-                '</div>';
+            var running = a.status === 'running';
+            var card = el('div', 'agent-card');
+            card.addEventListener('click', function() { openChat(a.id, a.name); });
+
+            var info = el('div', 'agent-info');
+            info.appendChild(el('h3', null, a.name));
+            info.appendChild(el('p', null, a.type));
+            card.appendChild(info);
+
+            var right = el('div', 'agent-right');
+            var meta = el('div', 'agent-meta');
+            meta.appendChild(el('span', 'badge ' + (running ? 'badge-running' : 'badge-idle'),
+                running ? '● Running' : '● Idle'));
+            meta.appendChild(el('div', 'time', a.created_at || 'just now'));
+            right.appendChild(meta);
+
+            var menuBtn = el('button', 'menu-btn', '⋮');
+            menuBtn.addEventListener('click', function(e) { toggleMenu(e, a.id); });
+            right.appendChild(menuBtn);
+            card.appendChild(right);
+
+            var dropdown = el('div', 'dropdown hidden');
+            dropdown.id = 'menu-' + a.id;
+            var del = el('div', 'dropdown-item danger', '🗑 Delete');
+            del.addEventListener('click', function(e) { deleteAgent(e, a.id); });
+            dropdown.appendChild(del);
+            card.appendChild(dropdown);
+
+            return card;
         }
 
         function toggleMenu(e, agentId) {
@@ -237,7 +306,7 @@
         async function deleteAgent(e, agentId) {
             e.stopPropagation();
             openMenuId = null;
-            await fetch(API + '/agents/' + agentId, { method: 'DELETE' });
+            await api('/agents/' + agentId, { method: 'DELETE' });
             loadAgents();
         }
 
@@ -254,7 +323,7 @@
             var type = document.getElementById('agent-type').value;
             var instructions = document.getElementById('agent-instructions').value.trim();
             if (!name) { alert('Please enter a name'); return; }
-            await fetch(API + '/agents', {
+            await api('/agents', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: name, type: type, instructions: instructions })
@@ -273,7 +342,7 @@
             document.getElementById('chat-screen').classList.remove('hidden');
 
             try {
-                const res = await fetch(API + '/agents/' + agentId + '/history');
+                const res = await api('/agents/' + agentId + '/history');
                 const history = await res.json();
                 history.forEach(m => addMessage(m.content, m.role === 'user' ? 'user' : 'bot'));
             } catch(e) {}
@@ -299,7 +368,7 @@
             document.getElementById('chat-messages').appendChild(thinking);
 
             try {
-                var res = await fetch(API + '/chat/' + currentAgentId, {
+                var res = await api('/chat/' + currentAgentId, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: message })
@@ -317,13 +386,18 @@
                 // Poll until done
                 var pollInterval = setInterval(async function() {
                     try {
-                        var pollRes = await fetch(API + '/poll/' + jobId);
+                        var pollRes = await api('/poll/' + jobId);
                         var job = await pollRes.json();
                         if (job.status === 'done') {
                             clearInterval(pollInterval);
                             var el = document.getElementById('thinking');
                             if (el) el.remove();
                             addMessage(job.reply, 'bot');
+                        } else if (job.status === 'awaiting_confirmation') {
+                            clearInterval(pollInterval);
+                            var el = document.getElementById('thinking');
+                            if (el) el.remove();
+                            showEmailConfirm(jobId, job.pending_email);
                         } else if (job.status === 'error') {
                             clearInterval(pollInterval);
                             var el = document.getElementById('thinking');
@@ -345,6 +419,81 @@
             }
         }
 
+        // The bot never sends mail on its own. It proposes a message, and this
+        // card is the only path to actually delivering it.
+        function showEmailConfirm(jobId, email) {
+            email = email || {};
+            var box = document.getElementById('chat-messages');
+            var card = el('div', 'msg bot-msg email-confirm');
+
+            card.appendChild(el('div', 'email-confirm-title', '✉️ Send this email?'));
+            card.appendChild(el('div', 'email-field', 'To: ' + (email.to || '')));
+            card.appendChild(el('div', 'email-field', 'Subject: ' + (email.subject || '')));
+            card.appendChild(el('div', 'email-body', email.body || ''));
+
+            var actions = el('div', 'email-actions');
+            var send = el('button', 'email-btn email-send', 'Send');
+            var cancel = el('button', 'email-btn email-cancel', "Don't send");
+            actions.appendChild(send);
+            actions.appendChild(cancel);
+            card.appendChild(actions);
+            box.appendChild(card);
+            box.scrollTop = box.scrollHeight;
+
+            function decide(approve) {
+                send.disabled = true;
+                cancel.disabled = true;
+                actions.replaceChildren(
+                    el('span', 'email-decided', approve ? 'Sending…' : 'Cancelled')
+                );
+                api('/jobs/' + jobId + '/confirm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ approve: approve })
+                }).then(function() { resumePolling(jobId); })
+                  .catch(function(e) { addMessage('Error: ' + e.message, 'error'); });
+            }
+
+            send.addEventListener('click', function() { decide(true); });
+            cancel.addEventListener('click', function() { decide(false); });
+        }
+
+        // After a confirm/cancel the same job keeps running, so pick the poll
+        // back up rather than leaving the user staring at a dead card.
+        function resumePolling(jobId) {
+            var thinking = el('div', 'thinking-msg', 'Thinking...');
+            thinking.id = 'thinking';
+            document.getElementById('chat-messages').appendChild(thinking);
+
+            var iv = setInterval(async function() {
+                try {
+                    var res = await api('/poll/' + jobId);
+                    var job = await res.json();
+                    if (job.status === 'done') {
+                        clearInterval(iv);
+                        var t = document.getElementById('thinking');
+                        if (t) t.remove();
+                        addMessage(job.reply, 'bot');
+                    } else if (job.status === 'awaiting_confirmation') {
+                        clearInterval(iv);
+                        var t = document.getElementById('thinking');
+                        if (t) t.remove();
+                        showEmailConfirm(jobId, job.pending_email);
+                    } else if (job.status === 'error') {
+                        clearInterval(iv);
+                        var t = document.getElementById('thinking');
+                        if (t) t.remove();
+                        addMessage('Error: ' + job.error, 'error');
+                    }
+                } catch(e) {
+                    clearInterval(iv);
+                    var t = document.getElementById('thinking');
+                    if (t) t.remove();
+                    addMessage('Error: Lost connection while waiting', 'error');
+                }
+            }, 1500);
+        }
+
         function addMessage(text, sender) {
             var box = document.getElementById('chat-messages');
             var div = document.createElement('div');
@@ -358,9 +507,6 @@
         loadAgents();
         setInterval(loadAgents, 5000);
 
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/static/sw.js');
-        }
     </script>
 </body>
 </html>

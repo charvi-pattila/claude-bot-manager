@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+tests
+.env
+*.db
+app.log
+nohup.out
+README.md
+CHANGELOG.md
