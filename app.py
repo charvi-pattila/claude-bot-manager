@@ -14,12 +14,17 @@ Two behaviours are load-bearing and easy to undo by accident:
 from __future__ import annotations
 
 import hmac
-import secrets
 import smtplib
 import threading
+import time
+import uuid
+from collections import defaultdict
+from datetime import timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 from functools import wraps
+from threading import Lock
 from typing import Any
 
 from flask import (
@@ -41,15 +46,17 @@ import llm
 config.validate()
 
 app = Flask(__name__)
-# A random key means sessions do not survive a restart (everyone re-logs in).
-# Set SECRET_KEY to keep them across deploys.
-app.secret_key = config.SECRET_KEY or secrets.token_hex(32)
+# Required, not optional: with more than one gunicorn worker a per-process
+# random key means each worker signs cookies differently, so a login bounces at
+# random depending on which worker answers. config.validate() enforces it.
+app.secret_key = config.SECRET_KEY
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    # Cookie is only sent over HTTPS in deployment; relaxed locally so http://
-    # localhost still works.
-    SESSION_COOKIE_SECURE=bool(config.ALLOWED_ORIGINS),
+    # Tied to an explicit flag rather than inferred from an unrelated CORS
+    # setting, which previously left HTTPS deploys serving a non-Secure cookie.
+    SESSION_COOKIE_SECURE=config.SECURE_COOKIES,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=config.SESSION_DAYS),
 )
 
 # The old build used a bare CORS(app), which let any website on the internet
@@ -92,16 +99,48 @@ def page_login_required(view):
     return wrapped
 
 
+# Failed-login timestamps per client address. A single shared password guarding
+# an endpoint that sends mail deserves more than a constant-time compare:
+# compare_digest closes the timing channel but does nothing about guessing.
+_login_failures: dict[str, list[float]] = defaultdict(list)
+_login_lock = Lock()
+
+
+def _throttle_key() -> str:
+    return request.remote_addr or "unknown"
+
+
+def _login_blocked() -> bool:
+    now = time.monotonic()
+    with _login_lock:
+        recent = [t for t in _login_failures[_throttle_key()] if now - t < config.LOGIN_WINDOW_S]
+        _login_failures[_throttle_key()] = recent
+        return len(recent) >= config.LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure() -> None:
+    with _login_lock:
+        _login_failures[_throttle_key()].append(time.monotonic())
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
+        if _login_blocked():
+            return render_template(
+                "login.html", error="Too many attempts. Wait a minute and try again."
+            ), 429
+
         supplied = (request.form.get("password") or "").strip()
-        # compare_digest so a wrong password takes the same time as a right one.
-        if hmac.compare_digest(supplied, config.APP_PASSWORD):
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str, which
+        # would 500 rather than reject a wrong password.
+        if hmac.compare_digest(supplied.encode(), config.APP_PASSWORD.encode()):
             session.clear()
             session["authed"] = True
             session.permanent = True
             return redirect(url_for("index"))
+
+        _record_login_failure()
         return render_template("login.html", error="Incorrect password."), 401
     if session.get("authed"):
         return redirect(url_for("index"))
@@ -196,6 +235,14 @@ def clear_history(agent_id: str):
 def send_gmail(to: str, subject: str, body: str) -> None:
     if not config.GMAIL_USER or not config.GMAIL_APP_PASSWORD:
         raise ValueError("Gmail credentials are not configured on the server.")
+
+    # Exactly one recipient. A comma-joined string would otherwise reach
+    # sendmail as a single RCPT TO and fan the message out past the address the
+    # user actually approved.
+    name, addr = parseaddr(to or "")
+    if not addr or "," in (to or "") or addr.count("@") != 1:
+        raise ValueError(f"Invalid recipient address: {to!r}")
+    to = addr
     # Optional second gate: even a confirmed send can be restricted to known
     # addresses, so a misclick cannot mail a stranger.
     if config.GMAIL_ALLOWED_RECIPIENTS and to not in config.GMAIL_ALLOWED_RECIPIENTS:
@@ -219,10 +266,13 @@ def send_gmail(to: str, subject: str, body: str) -> None:
 def _finish(job_id: str, agent_id: str, outcome: dict[str, Any]) -> None:
     """Persist the end state of a turn."""
     if outcome["type"] == "needs_confirmation":
+        # Fresh token per parked message. The client must echo it back, so an
+        # approval can only ever apply to the message it was issued for.
         db.update_job(
             job_id,
             status="awaiting_confirmation",
             pending_email=outcome["email"],
+            pending_token=str(uuid.uuid4()),
             conversation={
                 "messages": outcome["conversation"],
                 "pending_tool_uses": outcome["pending_tool_uses"],
@@ -231,7 +281,23 @@ def _finish(job_id: str, agent_id: str, outcome: dict[str, Any]) -> None:
         )
         return
 
-    reply = outcome["text"]
+    reply = (outcome["text"] or "").strip()
+    if not reply:
+        # Never persist an empty assistant message. The API rejects empty
+        # content, so storing one poisons every later turn for this agent — and
+        # there is no in-app way to clear history, so the agent would be stuck
+        # for good. Usually means max_tokens was consumed by thinking.
+        db.update_job(
+            job_id,
+            status="error",
+            error=(
+                "The model returned no text. This usually means MAX_TOKENS was used up "
+                "before it finished — try raising MAX_TOKENS or lowering EFFORT."
+            ),
+        )
+        db.set_agent_status(agent_id, "idle")
+        return
+
     db.add_message(agent_id, "assistant", reply)
     db.update_job(job_id, status="done", reply=reply)
     db.set_agent_status(agent_id, "idle")
@@ -291,19 +357,48 @@ def poll(job_id: str):
             "reply": job["reply"],
             "error": job["error"],
             "pending_email": job["pending_email"],
+            # The client echoes this back on confirm; it scopes the approval to
+            # exactly the message shown above.
+            "pending_token": job["pending_token"],
         }
     )
 
 
-def _resume_async(job_id: str, agent_id: str, system: str, approve: bool) -> None:
-    job = db.get_job(job_id)
-    state = job["conversation"] or {}
+def _resume_async(
+    job_id: str, agent_id: str, system: str, approve: bool, email: dict | None
+) -> None:
     try:
+        job = db.get_job(job_id)
+        if not job:
+            # Agent deleted mid-flight. Nothing left to update.
+            return
+        state = job["conversation"] or {}
+
+        # Validate the resume state *before* doing anything irreversible. If the
+        # persisted conversation is unusable there is no point sending: the turn
+        # cannot continue afterwards, and the user would be shown a failure with
+        # no hint that mail had already gone out.
+        if not isinstance(state.get("messages"), list) or not state.get("pending_tool_uses"):
+            db.update_job(
+                job_id,
+                status="error",
+                error="This request expired and could not be resumed. No email was sent.",
+                pending_email=None,
+                pending_token=None,
+                conversation=None,
+            )
+            db.set_agent_status(agent_id, "idle")
+            return
+
         if approve:
-            email = job["pending_email"] or {}
+            email = email or {}
             try:
                 send_gmail(email.get("to", ""), email.get("subject", ""), email.get("body", ""))
                 result_text = f"Email sent to {email.get('to', '')}."
+                # Record delivery immediately. If the follow-up model call then
+                # fails, the user must not be told the turn failed with no trace
+                # that the mail actually went — that invites a duplicate send.
+                db.add_message(agent_id, "assistant", f"[Email sent to {email.get('to', '')}]")
             except Exception as exc:
                 result_text = f"Failed to send email: {exc}"
         else:
@@ -313,8 +408,8 @@ def _resume_async(job_id: str, agent_id: str, system: str, approve: bool) -> Non
         outcome = llm.resume_after_confirmation(
             client,
             system,
-            state.get("messages", []),
-            state.get("pending_tool_uses", []),
+            state["messages"],
+            state["pending_tool_uses"],
             state.get("tool_use_id", ""),
             result_text,
         )
@@ -328,21 +423,36 @@ def _resume_async(job_id: str, agent_id: str, system: str, approve: bool) -> Non
 @app.route("/jobs/<job_id>/confirm", methods=["POST"])
 @login_required
 def confirm_job(job_id: str):
+    payload = request.get_json(silent=True) or {}
+
+    # Must be a real JSON boolean. bool() on the raw value made every non-empty
+    # string truthy, so {"approve": "false"} sent the email — fail-open on the
+    # one endpoint where that means mail leaves the account.
+    approve = payload.get("approve")
+    if approve is not True and approve is not False:
+        return jsonify({"error": "approve must be true or false"}), 400
+
+    token = payload.get("pending_token")
+    if not isinstance(token, str) or not token:
+        return jsonify({"error": "pending_token is required"}), 400
+
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
-    if job["status"] != "awaiting_confirmation":
-        return jsonify({"error": "This job is not awaiting confirmation."}), 409
-
-    approve = bool((request.get_json(silent=True) or {}).get("approve"))
     agent = db.get_agent(job["agent_id"])
     if not agent:
         return jsonify({"error": "Agent not found"}), 404
 
-    db.update_job(job_id, status="pending")
+    # Snapshot the email that was actually approved, then claim atomically. The
+    # claim is what makes this safe: it succeeds exactly once per parked message,
+    # so neither a concurrent confirm nor a replayed one can send a second time.
+    email = job["pending_email"]
+    if not db.claim_confirmation(job_id, token):
+        return jsonify({"error": "This request was already handled or has expired."}), 409
+
     threading.Thread(
         target=_resume_async,
-        args=(job_id, job["agent_id"], agent["instructions"], approve),
+        args=(job_id, job["agent_id"], agent["instructions"], approve, email),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id, "status": "pending"})

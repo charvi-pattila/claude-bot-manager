@@ -1,6 +1,57 @@
 # Changelog
 
-## Unreleased — hardening pass
+## Unreleased — review fixes
+
+Independent review of the hardening pass below found bugs that the original 46
+tests did not catch, because those tests only covered defects already known to
+their author. Every item here now has a regression test, and each of those tests
+was mutation-checked: the fix was reverted to confirm the test actually fails.
+
+### Agent-breaking
+- **An empty model reply no longer gets stored.** If thinking consumed the whole
+  `MAX_TOKENS` budget the assistant message was saved as `""`; the API rejects
+  empty content, so every later turn failed and — with no way to clear history in
+  the UI — the agent was permanently unusable. It now reports a clear error.
+- **The history window always starts with a user message.** Taking "the newest N"
+  of an alternating conversation lands on an assistant message for half of all
+  history lengths, and the API rejects a conversation that opens with one. Every
+  agent broke for good once it passed `HISTORY_LIMIT` turns.
+
+### Email gate
+The gate was bypassable three independent ways, all now closed and tested:
+- **Approval is bound to the message, not the job.** Each parked email carries a
+  single-use token the client must echo back. Previously a replayed confirmation
+  approved whatever happened to be parked when it arrived — and since a resumed
+  turn can park *again* with a different email, a stale confirm could send a
+  message the user had never seen.
+- **Confirmation is claimed atomically** with a conditional `UPDATE`. Two
+  simultaneous confirms both used to pass the status check and send the email
+  twice; an in-process lock could not have fixed it, since the workers are
+  separate processes.
+- **`approve` must be a real JSON boolean.** It was parsed with `bool()`, so
+  `{"approve": "false"}` — any non-empty string — sent the email.
+
+### Other fixes
+- The irreversible send now happens only *after* the resume state is validated,
+  and delivery is recorded immediately, so a later failure can't leave the user
+  thinking no mail went out.
+- A job whose agent was deleted mid-flight no longer strands the turn as
+  `pending` forever.
+- The legacy `bots.json` import is guarded by a migration marker rather than "is
+  the agents table empty", so deleting every agent and restarting no longer
+  resurrects them. Malformed rows are skipped instead of crash-looping the
+  workers at boot, and `bots.json` is now in `.dockerignore`.
+- **`SECRET_KEY` is required.** With 2 workers and a per-process random key, each
+  worker signed cookies differently and logins were rejected at random. It was
+  documented as optional.
+- `/login` is rate-limited per address; non-ASCII passwords no longer 500.
+- The session cookie's `Secure` flag has its own setting instead of being
+  inferred from the unrelated CORS config, and sessions expire in 7 days rather
+  than Flask's 31-day default.
+- Email recipients are validated as exactly one address.
+- Removed a vacuous refusal test and some dead code.
+
+## Earlier in this branch — hardening pass
 
 Security, durability, and correctness work, plus the first tests and CI.
 

@@ -25,6 +25,13 @@ def _int(name: str, default: int) -> int:
         raise RuntimeError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = _str(name).lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _csv(name: str) -> set[str]:
     return {part.strip() for part in _str(name).split(",") if part.strip()}
 
@@ -74,6 +81,13 @@ MAX_TOOL_ROUNDS = _int("MAX_TOOL_ROUNDS", 6)
 # --- Web -------------------------------------------------------------------
 PORT = _int("PORT", 8080)
 ALLOWED_ORIGINS = _csv("ALLOWED_ORIGINS")
+# Send the session cookie only over HTTPS. Its own flag rather than inferred
+# from ALLOWED_ORIGINS, which is unrelated and optional.
+SECURE_COOKIES = _bool("SECURE_COOKIES", False)
+SESSION_DAYS = _int("SESSION_DAYS", 7)
+# Failed logins allowed per client address per window, before a 429.
+LOGIN_MAX_ATTEMPTS = _int("LOGIN_MAX_ATTEMPTS", 10)
+LOGIN_WINDOW_S = _int("LOGIN_WINDOW_S", 60)
 
 
 def validate() -> None:
@@ -91,3 +105,10 @@ def validate() -> None:
         )
     if len(APP_PASSWORD) < 8:
         raise RuntimeError("APP_PASSWORD must be at least 8 characters.")
+    if not SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY is not set. It signs your login cookie, and with more than one "
+            "server worker an unset key means each worker signs differently — you would "
+            "be logged out at random. Generate one with:\n"
+            '  python -c "import secrets; print(secrets.token_hex(32))"'
+        )

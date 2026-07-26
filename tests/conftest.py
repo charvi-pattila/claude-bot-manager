@@ -6,8 +6,15 @@ place before app/config/db are imported. Hence the env writes at module top.
 
 import os
 import tempfile
+import threading
 
 import pytest
+
+# Captured before any fixture patches it. run_threads_inline swaps
+# threading.Thread on the real module (app.py does `import threading`, so
+# app_module.threading *is* that module), which would otherwise force genuinely
+# concurrent tests to run inline and deadlock.
+REAL_THREAD = threading.Thread
 
 _TMPDIR = tempfile.mkdtemp(prefix="cbm-tests-")
 
@@ -67,3 +74,13 @@ def run_threads_inline(monkeypatch):
             self._target(*self._args, **self._kwargs)
 
     monkeypatch.setattr(app_module.threading, "Thread", InlineThread)
+
+
+@pytest.fixture
+def sent_emails(monkeypatch):
+    """Record SMTP sends instead of performing them."""
+    recorded = []
+    monkeypatch.setattr(
+        app_module, "send_gmail", lambda to, subject, body: recorded.append((to, subject, body))
+    )
+    return recorded

@@ -33,6 +33,7 @@ At minimum `.env` needs:
 ```
 APP_PASSWORD=pick-a-long-password
 ANTHROPIC_API_KEY=sk-ant-...
+SECRET_KEY=<python -c "import secrets; print(secrets.token_hex(32))">
 ```
 
 Get an API key at [console.anthropic.com](https://console.anthropic.com).
@@ -48,7 +49,7 @@ Everything is read from the environment (or `.env`). Full template in
 | --- | --- | --- | --- |
 | `APP_PASSWORD` | **yes** | — | Login password. The app won't start without it. |
 | `ANTHROPIC_API_KEY` | **yes** | — | Your Anthropic API key. |
-| `SECRET_KEY` | recommended | random | Signs the login cookie. Unset means everyone is logged out on each restart. |
+| `SECRET_KEY` | **yes** | — | Signs the login cookie. Required: the app runs 2 workers, and without a fixed key each signs differently, logging you out at random. |
 | `DATABASE_URL` | in deployment | `sqlite:///chat_history.db` | Where agents and messages live. **See the deployment warning below.** |
 | `GMAIL_USER` | for email | — | Gmail address bots send from. |
 | `GMAIL_APP_PASSWORD` | for email | — | Google Account → Security → 2-Step Verification → App Passwords. |
@@ -59,6 +60,9 @@ Everything is read from the environment (or `.env`). Full template in
 | `HISTORY_LIMIT` | no | `40` | Turns of history re-sent per message. |
 | `MAX_TOOL_ROUNDS` | no | `6` | Ceiling on tool calls in one turn. |
 | `ALLOWED_ORIGINS` | no | unset | Comma-separated origins allowed to call the API cross-origin. |
+| `SECURE_COOKIES` | in deployment | `false` | Send the login cookie over HTTPS only. |
+| `SESSION_DAYS` | no | `7` | How long a login lasts. |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_S` | no | `10` / `60` | Wrong passwords allowed per address per window before 429. |
 | `PORT` | no | `8080` | Port to listen on. |
 
 ---
@@ -82,7 +86,9 @@ A chat message takes this path:
    immediately is what keeps a long reply from tripping a host's request timeout.
 3. The job asks Claude for a reply, looping if Claude wants to use a tool.
 4. If Claude wants to send an email, the job **stops** and waits. You get a card
-   showing exactly what would be sent, with Send and Don't send.
+   showing exactly what would be sent, with Send and Don't send. Each parked
+   message gets a single-use token that your confirmation has to quote, so an
+   approval can only ever apply to the message you were actually shown.
 
 Jobs live in the database rather than in memory, so a reply survives a restart
 and works when more than one server process is running.

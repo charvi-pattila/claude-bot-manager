@@ -71,17 +71,51 @@ jobs = Table(
     Column("error", Text, nullable=True),
     # Pending send_email payload, shown to the user for confirmation.
     Column("pending_email", JSON, nullable=True),
+    # Single-use token identifying *this specific* parked message. Approval is
+    # bound to the token, not just the job id — otherwise a replayed confirm
+    # approves whatever happens to be parked when it lands, which can be a
+    # different email the user never saw.
+    Column("pending_token", String(36), nullable=True),
     # Serialized conversation state so a confirmed/cancelled turn can resume in
     # whichever worker process picks it up.
     Column("conversation", JSON, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+# Records one-time migrations so they are not re-run. Inferring "already done"
+# from the state of other tables is what made the legacy import repeat.
+migrations = Table(
+    "migrations",
+    metadata,
+    Column("name", String(100), primary_key=True),
+    Column("applied_at", DateTime(timezone=True), nullable=False),
+)
+
+LEGACY_IMPORT_MARKER = "import_legacy_bots_json"
+MAX_LEGACY_ENTRIES = 500
+
 _engine = None
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _migration_done(name: str) -> bool:
+    with get_engine().connect() as conn:
+        return (
+            conn.execute(select(migrations.c.name).where(migrations.c.name == name)).fetchone()
+            is not None
+        )
+
+
+def _mark_migration_done(name: str) -> None:
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(insert(migrations).values(name=name, applied_at=_now()))
+    except Exception:
+        # Another worker booting concurrently won the insert. Harmless.
+        pass
 
 
 def get_engine():
@@ -99,14 +133,6 @@ def get_engine():
 def init_db() -> None:
     metadata.create_all(get_engine())
     _import_legacy_bots_json()
-
-
-def reset_engine_for_tests(url: str) -> None:
-    """Point the module at a throwaway database. Test-support only."""
-    global _engine
-    config.DATABASE_URL = url
-    _engine = None
-    init_db()
 
 
 # --- Agents ----------------------------------------------------------------
@@ -188,6 +214,12 @@ def list_messages(agent_id: str, limit: int | None = None) -> list[dict[str, Any
         stmt = stmt.order_by(messages.c.id.desc()).limit(limit)
         with get_engine().connect() as conn:
             rows = list(reversed(conn.execute(stmt).fetchall()))
+        # The window must open on a user message. Slicing "newest N" of a
+        # strictly alternating history lands on an assistant message half the
+        # time, and the API rejects a conversation that starts with one — which
+        # broke every agent permanently once it passed the limit.
+        while rows and rows[0].role != "user":
+            rows.pop(0)
     return [
         {
             "role": r.role,
@@ -232,8 +264,33 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         "reply": row.reply,
         "error": row.error,
         "pending_email": row.pending_email,
+        "pending_token": row.pending_token,
         "conversation": row.conversation,
     }
+
+
+def claim_confirmation(job_id: str, token: str) -> bool:
+    """Atomically take ownership of a parked confirmation.
+
+    A single conditional UPDATE is the whole guard. Read-then-write let two
+    concurrent confirms both pass the status check and both send the email, and
+    an in-process lock cannot help because the workers are separate processes.
+    Matching on the token as well means a replayed confirm cannot approve a
+    *different* message that parked in the meantime.
+
+    Returns True exactly once per parked message.
+    """
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            update(jobs)
+            .where(
+                jobs.c.id == job_id,
+                jobs.c.status == "awaiting_confirmation",
+                jobs.c.pending_token == token,
+            )
+            .values(status="pending", pending_token=None)
+        )
+        return result.rowcount == 1
 
 
 # --- One-time migration ----------------------------------------------------
@@ -248,22 +305,32 @@ def _import_legacy_bots_json(path: str = "bots.json") -> None:
     """
     if not os.path.exists(path):
         return
-    with get_engine().connect() as conn:
-        already = conn.execute(select(agents.c.id).limit(1)).fetchone()
-    if already:
+    # Guard on "have we imported before", not "is the table empty". Keying off
+    # row count meant deleting every agent and restarting resurrected them all.
+    if _migration_done(LEGACY_IMPORT_MARKER):
         return
     try:
         with open(path, encoding="utf-8") as fh:
             legacy = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, ValueError):
+        _mark_migration_done(LEGACY_IMPORT_MARKER)
         return
-    if not isinstance(legacy, list):
-        return
-    for entry in legacy:
-        if not isinstance(entry, dict) or not entry.get("name"):
-            continue
-        create_agent(
-            name=entry["name"],
-            agent_type=entry.get("type", "bot"),
-            instructions=entry.get("instructions", ""),
-        )
+    if isinstance(legacy, list):
+        for entry in legacy[:MAX_LEGACY_ENTRIES]:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                create_agent(
+                    name=name.strip()[:200],
+                    agent_type=str(entry.get("type") or "bot")[:50],
+                    instructions=str(entry.get("instructions") or "")[:100_000],
+                )
+            except Exception:
+                # One malformed row must not take the process down. init_db()
+                # runs at import time, so an exception here is a boot crash
+                # loop across every worker rather than a skipped agent.
+                continue
+    _mark_migration_done(LEGACY_IMPORT_MARKER)

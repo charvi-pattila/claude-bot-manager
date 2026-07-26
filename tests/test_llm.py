@@ -101,9 +101,12 @@ def test_loop_is_bounded():
 
 
 def test_refusal_is_handled():
+    """Assert the actual copy: with only a type check this passed even with the
+    refusal branch deleted, because the empty response also yields type=text."""
     client = FakeClient([FakeResponse([], "refusal")])
     result = llm.run_turn(client, "system", [{"role": "user", "content": "..."}])
     assert result["type"] == "text"
+    assert result["text"] == "I can't help with that request."
 
 
 def test_conversation_state_is_json_serializable():

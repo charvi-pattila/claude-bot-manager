@@ -397,7 +397,7 @@
                             clearInterval(pollInterval);
                             var el = document.getElementById('thinking');
                             if (el) el.remove();
-                            showEmailConfirm(jobId, job.pending_email);
+                            showEmailConfirm(jobId, job.pending_email, job.pending_token);
                         } else if (job.status === 'error') {
                             clearInterval(pollInterval);
                             var el = document.getElementById('thinking');
@@ -421,7 +421,7 @@
 
         // The bot never sends mail on its own. It proposes a message, and this
         // card is the only path to actually delivering it.
-        function showEmailConfirm(jobId, email) {
+        function showEmailConfirm(jobId, email, pendingToken) {
             email = email || {};
             var box = document.getElementById('chat-messages');
             var card = el('div', 'msg bot-msg email-confirm');
@@ -449,7 +449,7 @@
                 api('/jobs/' + jobId + '/confirm', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ approve: approve })
+                    body: JSON.stringify({ approve: approve, pending_token: pendingToken })
                 }).then(function() { resumePolling(jobId); })
                   .catch(function(e) { addMessage('Error: ' + e.message, 'error'); });
             }
@@ -478,7 +478,7 @@
                         clearInterval(iv);
                         var t = document.getElementById('thinking');
                         if (t) t.remove();
-                        showEmailConfirm(jobId, job.pending_email);
+                        showEmailConfirm(jobId, job.pending_email, job.pending_token);
                     } else if (job.status === 'error') {
                         clearInterval(iv);
                         var t = document.getElementById('thinking');

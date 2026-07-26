@@ -14,16 +14,6 @@ from tests.test_llm import FakeClient, FakeResponse, text, tool_use
 EMAIL = {"to": "friend@example.com", "subject": "Trip", "body": "Here is the plan."}
 
 
-@pytest.fixture
-def sent_emails(monkeypatch):
-    """Record SMTP sends instead of performing them."""
-    recorded = []
-    monkeypatch.setattr(
-        app_module, "send_gmail", lambda to, subject, body: recorded.append((to, subject, body))
-    )
-    return recorded
-
-
 def make_agent(auth_client, name="Mailer"):
     return auth_client.post("/agents", json={"name": name}).get_json()["id"]
 
@@ -32,6 +22,14 @@ def stub_model(monkeypatch, responses):
     client = FakeClient(responses)
     monkeypatch.setattr(llm, "get_client", lambda: client)
     return client
+
+
+def confirm(auth_client, job_id, approve):
+    """Confirm a parked email, echoing the token the UI would have received."""
+    token = auth_client.get(f"/poll/{job_id}").get_json()["pending_token"]
+    return auth_client.post(
+        f"/jobs/{job_id}/confirm", json={"approve": approve, "pending_token": token}
+    )
 
 
 def test_plain_chat_round_trip(auth_client, monkeypatch, run_threads_inline):
@@ -74,7 +72,7 @@ def test_confirm_sends(auth_client, monkeypatch, run_threads_inline, sent_emails
     )
     job_id = auth_client.post(f"/chat/{agent_id}", json={"message": "email"}).get_json()["job_id"]
 
-    auth_client.post(f"/jobs/{job_id}/confirm", json={"approve": True})
+    confirm(auth_client, job_id, True)
 
     assert sent_emails == [(EMAIL["to"], EMAIL["subject"], EMAIL["body"])]
     assert auth_client.get(f"/poll/{job_id}").get_json()["status"] == "done"
@@ -91,7 +89,7 @@ def test_decline_does_not_send(auth_client, monkeypatch, run_threads_inline, sen
     )
     job_id = auth_client.post(f"/chat/{agent_id}", json={"message": "email"}).get_json()["job_id"]
 
-    auth_client.post(f"/jobs/{job_id}/confirm", json={"approve": False})
+    confirm(auth_client, job_id, False)
 
     assert sent_emails == []
     assert auth_client.get(f"/poll/{job_id}").get_json()["reply"] == "Okay, I won't."
@@ -102,7 +100,10 @@ def test_confirm_rejected_when_not_awaiting(auth_client, monkeypatch, run_thread
     stub_model(monkeypatch, [FakeResponse([text("Hi!")], "end_turn")])
     job_id = auth_client.post(f"/chat/{agent_id}", json={"message": "hi"}).get_json()["job_id"]
 
-    assert auth_client.post(f"/jobs/{job_id}/confirm", json={"approve": True}).status_code == 409
+    resp = auth_client.post(
+        f"/jobs/{job_id}/confirm", json={"approve": True, "pending_token": "anything"}
+    )
+    assert resp.status_code == 409
 
 
 def test_missing_api_key_returns_503(auth_client, monkeypatch):
