@@ -1,7 +1,10 @@
 venv/
+.venv/
 .env
 __pycache__/
 *.pyc
 *.db
 app.log
 nohup.out
+.pytest_cache/
+.ruff_cache/
